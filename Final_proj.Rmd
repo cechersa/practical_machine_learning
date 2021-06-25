@@ -1,0 +1,229 @@
+---
+title: "Final_project"
+author: "CeciliaHermosilla"
+date: "24/6/2021"
+---
+
+###**Download the data sets**
+```{r, eval=FALSE}
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+              destfile="training.csv")
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",
+              destfile="testing.csv")
+```
+
+**Create R objects with datasets**
+```{r}
+training <- read.csv("training.csv")
+testing <- read.csv("testing.csv")
+```
+
+###**Explore the training data set**
+```{r,eval=FALSE}
+names(training) #Variables
+str(training) #Summary of the object and variables
+```
+
+###**Partition training data set to perform cross-validation**
+
+75% of the data will be kept on the training subset of the training set called "data_training" and the rest, in the testing subset called "test_training".
+```{r}
+library("caret")
+set.seed(1000)
+
+intrain <- createDataPartition(y=training$classe,p=0.75,list=FALSE)
+data_training <- training[intrain,]
+test_training <- training[-intrain,]
+```
+
+###**Transformation of variables**
+**Find variables to delete**
+```{r}
+#Delete variables with large missing data and number not-displayed (#DIV characters) and delete them
+miss <- data.frame(missing=colSums(is.na(data_training)))
+
+#Check how many NA there are on every variable and delete them
+rownames(miss) <- 1:nrow(miss)
+miss_cols <- as.numeric(rownames(subset(miss,subset=missing!=0)))
+data_training <- data_training[,-miss_cols]
+
+#Find variables with #DIV characters due to errors in data
+weird <- grep(pattern="#DIV.*",data_training)
+```
+
+A function was created to transform variables and delete columns that would not be helpful
+```{r}
+#Transform outcome into factor variable
+data_training$classe <- as.factor(data_training$classe)
+
+#Function created
+library("magrittr")
+preproc_fx <- function(z) {
+  z$cvtd_timestamp <- z$cvtd_timestamp %>%
+    as.factor() %>% 
+    sapply(FUN = unclass)
+  z$new_window <- z$new_window %>%
+    as.factor() %>% 
+    sapply(FUN = unclass) %>%
+    as.numeric()
+  z$user_name <- z$user_name %>%
+    as.factor() %>% 
+    sapply(FUN = unclass)
+  
+  z <- z[,-weird]
+  
+  z$X <- NULL
+  new_data <<- z
+}
+```
+
+Apply function to the training subset of the training set to transform the data
+```{r, results='hide'}
+preproc_fx(data_training)
+data_training <- new_data
+```
+
+```{r}
+#Plot the data
+par(mfrow=c(1,2))
+boxplot(data_training$gyros_forearm_y,main="before")
+
+#Delete row with outliers and apparently many errors
+data_training <- data_training[-4031,]
+
+#Plot the data again
+boxplot(data_training$gyros_forearm_y, main="after")
+```
+
+###**Establish correlation between variables**
+```{r}
+#Look for the correlation between all variables except the outcome
+correlation <- abs(cor(data_training[,-59]))
+diag(correlation) <- 0
+
+#Establish variables >85% correlated
+variables_correlated <- data.frame(which(correlation>0.85,arr.ind=T))
+variables_correlated
+```
+
+Verification of the PCA for the seven variables >85% correlated between each other.
+```{r, eval=FALSE}
+#Perform PCA in seven variables highly correlated to each other
+featurePlot(x=data_training[,c(7:8,10,14:17)],y=data_training$classe,plot="pairs")
+prePROC1 <- prcomp(data_training[,c(7:8,10,14:17)],center=TRUE,scale=TRUE)
+
+summary(prePROC1)
+
+#Assign color to values in outcome
+data_training$color <- data_training$classe %>% 
+  gsub(pattern= "A", replacement="blue") %>%
+  gsub(pattern="B", replacement="green") %>%
+  gsub(pattern="C", replacement="orange") %>%
+  gsub(pattern="D", replacement="magenta") %>%
+  gsub(pattern="E", replacement="gray")
+
+#Plot the PCA analysis
+plot(prePROC1$x[,1],prePROC1$x[,2],
+     col=alpha(data_training$color,0.2),
+     xlab="PC1",ylab="PC2",pch=20)
+
+#Delete the variable just created
+data_training$color <- NULL
+```
+
+###**Fit models**
+**Predict using PCA with the seven variables**
+
+The seven variables will be used through PCA and caret package to check how prediction is done.
+```{r, eval=FALSE}
+names(data_training[,c(7:8,10,14:17)])
+
+#Fit a model preprocessing with PCA and using random forest
+fit1 <- train(classe ~ roll_belt + pitch_belt + total_accel_belt + accel_belt_x
+              + accel_belt_y + accel_belt_z + magnet_belt_x,
+              preProcess="pca",method="rf",data=data_training)
+```
+```{r}
+#Transform data on the testing subset of the training set
+test_training$classe <- as.factor(test_training$classe)
+test_training <- test_training[,-miss_cols]
+preproc_fx(test_training)
+test_training <- new_data
+```
+```{r,eval=FALSE}
+#Predict using the first model fit
+fit1_result <- confusionMatrix(test_training$classe, predict(fit1,test_training))
+```
+**The accuracy was of 0.47**, not too high even thought random forest was used.
+
+###Another fit to compare building one tree and using different variables than before
+
+Other variables were chosen including one of the past seven, "total_accel_belt" and others chosen from the pool of variables with little correlation between each other (less than 30%).
+
+```{r}
+variables_little_correlated <- data.frame(which(correlation<0.3,arr.ind=T))
+head(variables_little_correlated)
+```
+
+```{r, eval=FALSE}
+#Fit the model
+fit2 <- train(classe ~ total_accel_belt + gyros_belt_z + roll_dumbbell + accel_arm_y 
+              + gyros_forearm_y + magnet_belt_z + pitch_forearm + magnet_forearm_x,
+              method="rpart",data=data_training)
+
+#Predict on testing subset of the training set
+fit2_result <- confusionMatrix(test_training$classe, predict(fit2,test_training))
+```
+**The accuracy was of 0.49**, if this was with one tree, it will be larger for many trees, so the same variables will be used with random forest method.
+
+###Using random forest on the same variables of second fit
+```{r,eval=FALSE}
+#Fit the model
+fit3 <- train(classe ~ total_accel_belt + gyros_belt_z + roll_dumbbell + accel_arm_y + gyros_forearm_y + magnet_belt_z + pitch_forearm + magnet_forearm_x,
+              method="rf",data=data_training)
+
+#Predict on testing subset of the training set
+fit3_result <- confusionMatrix(test_training$classe, predict(fit3,test_training))
+fit3_result
+```
+
+Confusion Matrix and Statistics
+
+                      Reference
+```{r, echo=FALSE}
+data.frame(Prediction=c("A","B","C","D","E"),A=c(1318,48,14,27,5),B=c(22,851,33,10,3),C=c(23,38,781,49,3),D=c(24,7,19,714,9),E=c(8,5,8,4,881))
+```
+    
+Overall Statistics
+                                          
+               Accuracy : 0.9268          
+                 95% CI : (0.9191, 0.9339)
+    No Information Rate : 0.2879          
+    P-Value [Acc > NIR] : < 2.2e-16       
+                                          
+                  Kappa : 0.9074          
+                                          
+ Mcnemar's Test P-Value : 0.0004798       
+
+Statistics by Class:
+
+```{r, echo=FALSE}
+data.frame(Measure=c("Sensitivity","Specificity","Pos Pred Value","Neg Pred Value","Prevalence","Detection Rate", "Detection Prevalence", "Balanced Accuracy"),Class_A =c(0.9334,0.9779,0.9448,0.9732,0.2879,0.2688,0.2845,0.9557),Class_B =c(0.9260,0.9754,0.8967,0.9828,0.1874,0.1735,0.1935,0.9507),Class_C =c(0.8736,0.9815,0.9135,0.9721,0.1823,0.1593,0.1743,0.9276),Class_D =c(0.9237,0.9782,0.8881,0.9856,0.1576,0.1456,0.1639,0.9509),Class_E =c(0.9724,0.9950,0.9778,0.9938,0.1847,0.1796,0.1837,0.9837))
+```
+
+This model will be selected since it has **accuracy = 0.93**, 95% CI[0.92-0.93],  Specificity ranging 0.97-0.99 and Sensitivity ranging 0.87-0.93 even though the **out of sample error** will be higher but since the testing set has no classe assigned it cannot be proven exactly how much.
+
+###**Predicting on the testing set with the model selected**
+```{r,eval=FALSE}
+#Transform the data as before
+data_training <- data_training[,-miss_cols]
+preproc_fx(testing)
+testing <- new_data
+
+#Predict using the model
+prediction <- predict(fit3,testing)
+prediction
+```
+
+[1] B A A A A E D B A A B C B A E E A B A B
+Levels: A B C D E
